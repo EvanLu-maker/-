@@ -1,0 +1,153 @@
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+import time
+import random
+import tkinter as tk
+from tkinter import simpledialog, messagebox
+import datetime
+import re
+
+# --- 初始化瀏覽器 ---
+def init_driver():
+    options = webdriver.ChromeOptions()
+    options.add_argument("--disable-notifications")
+    options.add_argument("--lang=zh-TW")
+    options.add_experimental_option("detach", True)
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_experimental_option("excludeSwitches", ["enable-automation"])
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
+    return driver
+
+# --- 手動登入 ---
+def manual_login(driver):
+    print("請手動完成登入...")
+    driver.get("https://www.threads.net/login")
+    input("登入完成後請按 Enter 繼續...")
+
+# --- 從網址抓作者帳號 ---
+def extract_author_from_url(url):
+    match = re.search(r'threads\.net/@([^/]+)', url)
+    return match.group(1).lower() if match else None
+
+# --- 滾動抓留言並分析 ---
+def scroll_and_get_comments(driver, url):
+    print("開始抓取留言...")
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    no_new_content_count = 0
+    max_no_new_content = 10
+
+    comment_ids_set = set()  # 留言內容判斷唯一性
+    unique_users = set()
+
+    author_username = extract_author_from_url(url)
+    print(f"從網址取得貼文作者：@{author_username}")
+
+    while True:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(random.uniform(3.0, 5.0))
+        new_height = driver.execute_script("return document.body.scrollHeight")
+
+        try:
+            comment_blocks = WebDriverWait(driver, 10).until(
+                EC.presence_of_all_elements_located((By.XPATH,
+                    '//div[contains(@class, "xrvj5dj") and contains(@class, "xd0jker") and contains(@class, "x1evr45z")]'
+                ))
+            )
+
+            for block in comment_blocks:
+                try:
+                    username_elem = block.find_element(By.XPATH, './/a[contains(@href, "/@")]')
+                    content_elem = block.find_element(By.XPATH, './/span')
+                    username = username_elem.get_attribute("href").split("/@")[-1].split('/')[0].lower()
+                    content = content_elem.text.strip()
+                    if not content:
+                        continue
+                    comment_id = f"{username}:{content}"
+                    if comment_id not in comment_ids_set:
+                        comment_ids_set.add(comment_id)
+                        if username != author_username:
+                            unique_users.add(f"@{username}")
+                except:
+                    continue
+        except Exception as e:
+            print(f"留言提取錯誤：{e}")
+
+        print(f"目前留言總數（去重內容）：{len(comment_ids_set)}，不重複留言帳號數：{len(unique_users)}")
+
+        if new_height == last_height:
+            no_new_content_count += 1
+            if no_new_content_count >= max_no_new_content:
+                print("已到底或無更多留言，停止滾動。")
+                break
+        else:
+            no_new_content_count = 0
+            last_height = new_height
+
+    return len(comment_ids_set), list(unique_users)
+
+# --- 抽獎 ---
+def draw_winners(user_list):
+    root = tk.Tk()
+    root.withdraw()
+
+    if not user_list:
+        messagebox.showinfo("抽獎結果", "無留言帳號可抽獎。")
+        return
+
+    count = simpledialog.askinteger("抽獎人數", f"共 {len(user_list)} 個帳號，請輸入要抽出的人數：", minvalue=1, maxvalue=len(user_list))
+    if count is None:
+        messagebox.showinfo("提示", "抽獎已取消。")
+        return
+
+    winners = random.sample(user_list, count)
+    message = "🎉 恭喜中獎者 🎉\n\n" + "\n".join(winners)
+    messagebox.showinfo("抽獎結果", message)
+    print("\n" + message)
+
+# --- 主程式 ---
+def main():
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        driver = init_driver()
+        manual_login(driver)
+
+        target_url = simpledialog.askstring("Threads 貼文網址", "請輸入 Threads 貼文網址：")
+        if not target_url:
+            messagebox.showinfo("提示", "未輸入網址，程式結束。")
+            return
+
+        driver.get(target_url)
+        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+        time.sleep(7)
+
+        total_comments, unique_users = scroll_and_get_comments(driver, target_url)
+
+        print("\n============== 統計結果 ==============")
+        print(f"實際留言總數（去重內容）：{total_comments}")
+        print(f"不重複留言帳號數：{len(unique_users)}")
+        print("======================================")
+
+        if unique_users:
+            draw_winners(unique_users)
+        else:
+            print("無可抽獎帳號。")
+
+    except Exception as e:
+        print(f"錯誤：{e}")
+        if 'driver' in locals():
+            screenshot = f"error_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.png"
+            driver.save_screenshot(screenshot)
+            print(f"已儲存錯誤截圖：{screenshot}")
+    finally:
+        input("\n按 Enter 結束...")
+        if 'driver' in locals():
+            driver.quit()
+
+if __name__ == "__main__":
+    main()
